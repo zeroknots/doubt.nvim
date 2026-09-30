@@ -8,6 +8,7 @@ local config = require("doubt.config")
 local diff_viewer = require("doubt.diff_viewer")
 local export = require("doubt.export")
 local healthcheck = require("doubt.healthcheck")
+local herdr = require("doubt.herdr")
 local input = require("doubt.input")
 local inline_editor = require("doubt.inline_editor")
 local keymaps = require("doubt.keymaps")
@@ -867,7 +868,8 @@ function M.copy_export(opts)
 	return copy_export_payload(payload)
 end
 
-function M.copy_export_async(opts)
+-- Builds the trusted export (capturing the review-run baseline off the UI path) and hands it to `deliver`.
+local function export_async(opts, deliver)
 	opts = opts or {}
 	if export_snapshot then
 		ctx.notify("A doubt export is already being prepared", vim.log.levels.INFO)
@@ -880,7 +882,7 @@ function M.copy_export_async(opts)
 		trusted_only = true,
 	}))
 	if not payload or payload.exportable_claim_count == 0 or not payload.review_run_deferred then
-		return copy_export_payload(payload)
+		return deliver(payload)
 	end
 
 	local snapshot = start_export_spinner()
@@ -902,7 +904,7 @@ function M.copy_export_async(opts)
 		end
 		if not tree then
 			if err == "Review-run diffs require a Git repository" then
-				copy_export_payload(payload)
+				deliver(payload)
 			else
 				ctx.notify("Unable to prepare doubt export: " .. (err or "unknown error"), vim.log.levels.ERROR)
 			end
@@ -916,7 +918,108 @@ function M.copy_export_async(opts)
 			skip_inspection_refresh = true,
 			trusted_only = true,
 		}))
-		copy_export_payload(completed_payload)
+		deliver(completed_payload)
+	end)
+end
+
+function M.copy_export_async(opts)
+	return export_async(opts, copy_export_payload)
+end
+
+local function deliver_to_agent(payload, agent)
+	if not payload then
+		return
+	end
+	if payload.exportable_claim_count == 0 then
+		copy_export_payload(payload)
+		return
+	end
+	herdr.prompt(agent.pane_id, payload.text, function(_, err, code)
+		if err then
+			local register = (config.get().export or {}).register or "+"
+			vim.fn.setreg(register, payload.text)
+			local reason = code == "agent_blocked" and "it is waiting for input" or err
+			ctx.notify(
+				string.format("Could not send to %s (%s); copied the export to %s instead", agent.pane_id, reason, register),
+				vim.log.levels.WARN
+			)
+			return
+		end
+		local count = payload.exportable_claim_count
+		ctx.notify(string.format("Sent %d %s to %s (%s)", count, pluralize_claim(count), agent.agent, agent.pane_id))
+		if (config.get().send or {}).close_after then
+			vim.schedule(function()
+				pcall(vim.cmd, "qall")
+			end)
+		end
+	end)
+end
+
+--- Submits the export to a herdr agent working in this repository; copies it when herdr is unavailable.
+function M.send_export(opts)
+	opts = opts or {}
+	local session_name = state.active_session_name()
+	if not session_name then
+		ctx.notify("No active doubt session", vim.log.levels.INFO)
+		return
+	end
+	if not herdr.available() then
+		ctx.notify("Not running inside herdr; copying the export instead", vim.log.levels.INFO)
+		return M.copy_export_async(opts)
+	end
+
+	local root = vim.system({ "git", "rev-parse", "--show-toplevel" }, { cwd = vim.fn.getcwd(), text = true }):wait()
+	local repo_root = root.code == 0 and vim.trim(root.stdout) or vim.fn.getcwd()
+
+	herdr.list_agents(function(agents, err)
+		if not agents then
+			ctx.notify("Could not list herdr agents: " .. (err or "unknown error"), vim.log.levels.WARN)
+			return
+		end
+		local candidates = herdr.candidates(agents, {
+			repo_root = repo_root,
+			self_pane = vim.env.HERDR_PANE_ID,
+			workspace_id = vim.env.HERDR_WORKSPACE_ID,
+		})
+		if #candidates == 0 then
+			ctx.notify("No herdr agent is working in " .. repo_root .. "; copying the export instead", vim.log.levels.WARN)
+			M.copy_export_async(opts)
+			return
+		end
+
+		local function send_to(agent)
+			if state.active_session_name() ~= session_name then
+				ctx.notify("The active doubt session changed; run :DoubtSend again", vim.log.levels.WARN)
+				return
+			end
+			if agent.agent_status == "blocked" then
+				ctx.notify(string.format("%s (%s) is waiting for input; answer it first", agent.agent, agent.pane_id), vim.log.levels.WARN)
+				return
+			end
+			if agent.agent_status == "working"
+				and vim.fn.confirm(string.format("%s (%s) is working. Send anyway?", agent.agent, agent.pane_id), "&Send\n&Cancel", 2) ~= 1
+			then
+				return
+			end
+			herdr.remember(session_name, agent.pane_id)
+			export_async(opts, function(payload)
+				deliver_to_agent(payload, agent)
+			end)
+		end
+
+		local chosen = #candidates == 1 and candidates[1] or herdr.remembered(session_name, candidates)
+		if chosen then
+			send_to(chosen)
+			return
+		end
+		vim.ui.select(candidates, {
+			prompt = "Send doubt review to",
+			format_item = herdr.label,
+		}, function(choice)
+			if choice then
+				send_to(choice)
+			end
+		end)
 	end)
 end
 

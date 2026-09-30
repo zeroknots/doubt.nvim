@@ -104,6 +104,7 @@ local DEFAULTS = {
 		clear_buffer = "<leader>Db",
 		panel = "<leader>Dp",
 		review = "<leader>Dv",
+		send = "<leader>DS",
 		session_new = "<leader>Dn",
 		session_resume = "<leader>Ds",
 		stop_session = "<leader>Dx",
@@ -122,6 +123,9 @@ local DEFAULTS = {
 	},
 	review_runs = {
 		diff_viewer = "auto",
+	},
+	send = {
+		close_after = false,
 	},
 	preferences_path = vim.fs.joinpath(vim.fn.stdpath("state"), "doubt.nvim-preferences.json"),
 	state_path = vim.fs.joinpath(vim.fn.stdpath("state"), "doubt.nvim.json"),

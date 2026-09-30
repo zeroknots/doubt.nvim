@@ -106,6 +106,7 @@ Session management:
 Workspace session management:
 
 - `:DoubtReview [base]`
+- `:DoubtSend [template]`
 - `:DoubtWorkspaceSessionNew [name]`
 - `:DoubtWorkspaceSessionResume [name]`
 - `:DoubtWorkspaceSessionDelete [name]`
@@ -146,6 +147,17 @@ Template names are exposed as command completion so custom handoff wrappers stay
 Exports from that session start with a line naming the branch, base, and merge base, via the `{{review_context}}` template variable.
 
 Launch straight into a review from the shell with `nvim +DoubtReview` or `nvim "+DoubtReview develop"`. The default keymap is `<leader>Dv`.
+
+### Sending to a herdr agent
+
+Inside [herdr](https://herdr.dev), `:DoubtSend [template]` (`<leader>DS`) submits the export straight to the agent instead of the clipboard:
+
+1. Lists herdr agents whose working directory is inside this repository, preferring the current herdr workspace.
+2. Picks the only match, or asks via `vim.ui.select` and remembers the choice for the session.
+3. Refuses when the agent is blocked on a question, and confirms before sending to a working agent.
+4. Submits with `herdr agent prompt`. The export is otherwise identical to `:DoubtExport`, including the review-run checkpoint.
+
+Outside herdr, with no matching agent, or when herdr rejects the prompt, it copies to the register like `:DoubtExport`. Set `send.close_after = true` to quit Neovim after a successful send, which suits a review popup.
 
 ### Claim-scoped agent diffs
 
@@ -194,6 +206,7 @@ Use `:DoubtAgentInstructionsCopy` or `<leader>Da` to copy the exact instructions
 - `<leader>Dr` reject the current line or selection
 - `<leader>Dp` toggle the panel
 - `<leader>Dv` review the current branch against its base
+- `<leader>DS` send the export to the herdr agent working in this repository
 - `<leader>De` copy the active session handoff (default: review template)
 - `<leader>DE` open template picker, then copy handoff
 - `<leader>Da` copy instructions for agent-written workspace review sessions
@@ -333,6 +346,9 @@ require("doubt").setup({
   },
   review_runs = {
     diff_viewer = "auto",
+  },
+  send = {
+    close_after = false, -- quit Neovim after :DoubtSend succeeds
   },
   state_path = vim.fs.joinpath(vim.fn.stdpath("state"), "doubt.nvim.json"),
   signs = {

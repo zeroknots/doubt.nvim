@@ -212,6 +212,16 @@ function M.register(api)
 		nargs = "*",
 	})
 
+	replace_command("DoubtSend", function(command_opts)
+		api.send_export({ template = command_note(command_opts.args) })
+	end, {
+		complete = function(arg_lead)
+			return complete_export_template(api, arg_lead)
+		end,
+		desc = "Send the doubt export to the herdr agent working in this repository",
+		nargs = "?",
+	})
+
 	replace_command("DoubtReview", function(command_opts)
 		api.start_review({ base = command_note(command_opts.args) })
 	end, {
