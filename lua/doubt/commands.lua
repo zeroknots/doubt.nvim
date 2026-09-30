@@ -212,6 +212,13 @@ function M.register(api)
 		nargs = "*",
 	})
 
+	replace_command("DoubtReview", function(command_opts)
+		api.start_review({ base = command_note(command_opts.args) })
+	end, {
+		desc = "Review the current branch against its base in a doubt session",
+		nargs = "?",
+	})
+
 	replace_command("DoubtWorkspaceSessionNew", function(command_opts)
 		api.start_workspace_session({ name = command_note(command_opts.args) })
 	end, {

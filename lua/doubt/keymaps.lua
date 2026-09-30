@@ -17,6 +17,7 @@ local DEFAULT_DESC = {
 	toggle_notes = "Toggle doubt claim text descriptions",
 	clear_buffer = "Clear doubt state for current buffer",
 	panel = "Toggle doubt panel",
+	review = "Review current branch against its base",
 	session_new = "Start a new doubt session",
 	session_resume = "Resume a saved doubt session",
 	stop_session = "Stop the active doubt session",
@@ -134,6 +135,12 @@ function M.register(api, opts)
 		set_keymap("panel", "n", opts.panel, function()
 			api.open_panel()
 		end, DEFAULT_DESC.panel)
+	end
+
+	if opts.review then
+		set_keymap("review", "n", opts.review, function()
+			api.start_review()
+		end, DEFAULT_DESC.review)
 	end
 
 	if opts.session_new then

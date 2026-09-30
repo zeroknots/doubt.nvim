@@ -105,6 +105,7 @@ Session management:
 
 Workspace session management:
 
+- `:DoubtReview [base]`
 - `:DoubtWorkspaceSessionNew [name]`
 - `:DoubtWorkspaceSessionResume [name]`
 - `:DoubtWorkspaceSessionDelete [name]`
@@ -132,6 +133,19 @@ Template names are exposed as command completion so custom handoff wrappers stay
 `:DoubtExportXml` opens the full active session as compact XML grouped by file into a scratch XML buffer when you want to inspect the raw export.
 
 `:DoubtAgentInstructionsCopy` copies instructions for agents that should write review findings directly into a repo-local workspace session.
+
+### Branch reviews
+
+`:DoubtReview [base]` reviews the current branch the way a PR shows it: every change since the branch left its base.
+
+1. Resolves the base: the argument (tried as `origin/<base>` first), else the open PR's base via `gh`, else `origin/HEAD`, `origin/main`, `origin/master`.
+2. Fetches the remote base (`review.fetch`), then diffs the working tree against `git merge-base <base> HEAD`, so upstream commits never appear as branch changes.
+3. Starts or resumes the session `review/<branch>`.
+4. Opens Diffview against the merge base, or a quickfix list of hunks when Diffview is unavailable. Claim on the right-hand (working tree) side.
+
+Exports from that session start with a line naming the branch, base, and merge base, via the `{{review_context}}` template variable.
+
+Launch straight into a review from the shell with `nvim +DoubtReview` or `nvim "+DoubtReview develop"`. The default keymap is `<leader>Dv`.
 
 ### Claim-scoped agent diffs
 
@@ -179,6 +193,7 @@ Use `:DoubtAgentInstructionsCopy` or `<leader>Da` to copy the exact instructions
 - `<leader>Dc` flag concern on the current line or selection
 - `<leader>Dr` reject the current line or selection
 - `<leader>Dp` toggle the panel
+- `<leader>Dv` review the current branch against its base
 - `<leader>De` copy the active session handoff (default: review template)
 - `<leader>DE` open template picker, then copy handoff
 - `<leader>Da` copy instructions for agent-written workspace review sessions
@@ -308,6 +323,13 @@ require("doubt").setup({
   panel = {
     width = 56,
     side = "right",
+  },
+  review = {
+    base = nil, -- fixed base branch; nil auto-detects
+    fetch = true, -- fetch origin/<base> before diffing
+    gh = true, -- ask `gh pr view` for the PR base
+    session_prefix = "review/",
+    viewer = "auto", -- "auto" | "diffview" | "quickfix" | "none"
   },
   review_runs = {
     diff_viewer = "auto",

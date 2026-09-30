@@ -257,6 +257,7 @@ function M.build_export_text(opts)
 		claim_count = count_claims(files),
 		file_count = vim.tbl_count(files),
 		manifest_path = opts.review_run and opts.review_run.manifest_path or "",
+		review_context = opts.review_context or "",
 		run_id = opts.review_run and opts.review_run.run_id or "",
 		session = opts.session_name,
 		session_name = opts.session_name,

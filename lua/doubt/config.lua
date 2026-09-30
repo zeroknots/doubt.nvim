@@ -12,14 +12,14 @@ local DEFAULTS = {
 		templates = {
 			raw = "{{xml}}",
 			review = table.concat({
-				"The reviewer has provided feedback for the code in the xml below.",
+				"{{review_context}}The reviewer has provided feedback for the code in the xml below.",
 				"Fetch every referenced file and line from the repository before performing claim specific actions.",
 				"After addressing the claims and writing any required results manifest, give a concise outcome summary without repeating the claims or narrating your process.",
 				"",
 				"{{xml}}",
 			}, "\n"),
 			multi_agent = table.concat({
-				"You are coordinating a response to feedback the reviewer has provided.",
+				"{{review_context}}You are coordinating a response to feedback the reviewer has provided.",
 				"Fetch every referenced file and line from the repository before assigning claim specific work.",
 				"Triage each claim and delegate explanation or revision work as needed.",
 				"Do not instruct delegated agents to write the results manifest or run the completion helper; consolidate their responses and perform those final steps yourself.",
@@ -103,6 +103,7 @@ local DEFAULTS = {
 		export = "<leader>De",
 		clear_buffer = "<leader>Db",
 		panel = "<leader>Dp",
+		review = "<leader>Dv",
 		session_new = "<leader>Dn",
 		session_resume = "<leader>Ds",
 		stop_session = "<leader>Dx",
@@ -111,6 +112,13 @@ local DEFAULTS = {
 	panel = {
 		width = 56,
 		side = "right",
+	},
+	review = {
+		base = nil,
+		fetch = true,
+		gh = true,
+		session_prefix = "review/",
+		viewer = "auto",
 	},
 	review_runs = {
 		diff_viewer = "auto",
