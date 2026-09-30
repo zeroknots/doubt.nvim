@@ -26,6 +26,22 @@ local function verify_commit(ref, cwd)
 	return run_git({ "rev-parse", "--verify", "--quiet", ref .. "^{commit}" }, cwd)
 end
 
+local function run_async(command, cwd, timeout, callback)
+	local ok, err = pcall(vim.system, command, { cwd = cwd, text = true, timeout = timeout }, vim.schedule_wrap(function(result)
+		if result.code ~= 0 or (result.signal or 0) ~= 0 then
+			local stderr = vim.trim(result.stderr or "")
+			callback(nil, stderr ~= "" and stderr or "command failed")
+			return
+		end
+		callback(vim.trim(result.stdout or ""))
+	end))
+	if not ok then
+		vim.schedule(function()
+			callback(nil, tostring(err))
+		end)
+	end
+end
+
 local function gh_pr_base(cwd)
 	if vim.fn.executable("gh") ~= 1 then
 		return nil
@@ -74,6 +90,40 @@ local function fetch_remote_ref(ref, cwd)
 	end
 	local _, err = run_git({ "fetch", "--quiet", "origin", branch }, cwd, 30000)
 	return err == nil, err
+end
+
+--- Runs the slow network steps (PR base lookup, fetch) off the UI path.
+--- Calls back with the base to re-resolve against once the local refs are current.
+function M.sync_remote(opts, callback)
+	local cwd = opts.cwd
+	local requested = opts.base
+
+	local function fetch_target(pr_base)
+		local target = opts.base_ref
+		if requested then
+			target = vim.startswith(requested, "origin/") and requested or ("origin/" .. requested)
+		elseif pr_base then
+			target = "origin/" .. pr_base
+		end
+		local result = { base = requested or pr_base, target = target }
+		local branch = opts.fetch and target and target:match("^origin/(.+)$")
+		if not branch or vim.startswith(branch, "-") then
+			callback(result)
+			return
+		end
+		run_async({ "git", "fetch", "--quiet", "origin", branch }, cwd, 30000, function(_, err)
+			result.fetch_error = err
+			callback(result)
+		end)
+	end
+
+	if requested or opts.gh == false or vim.fn.executable("gh") ~= 1 then
+		fetch_target(nil)
+		return
+	end
+	run_async({ "gh", "pr", "view", "--json", "baseRefName", "-q", ".baseRefName" }, cwd, 10000, function(name)
+		fetch_target(name ~= nil and name ~= "" and name or nil)
+	end)
 end
 
 function M.session_name(prefix, branch)
@@ -182,13 +232,13 @@ local function diff_hunks(context)
 	return items
 end
 
-local function open_quickfix(context)
+local function open_quickfix(context, quiet)
 	local items = diff_hunks(context)
 	vim.fn.setqflist({}, " ", {
 		title = string.format("doubt review: %s...%s", context.base_ref, context.branch),
 		items = items,
 	})
-	if #items > 0 then
+	if #items > 0 and not quiet then
 		vim.cmd("copen")
 		vim.cmd("cfirst")
 	end
@@ -204,11 +254,37 @@ function M.open_viewer(context, viewer)
 		if has_diffview then
 			-- A single rev compares against the working tree, so the right side is the real, claimable file.
 			vim.cmd("DiffviewOpen " .. context.merge_base)
+			context.viewer_tab = vim.api.nvim_get_current_tabpage()
 			return "diffview"
 		end
 	end
 	open_quickfix(context)
 	return "quickfix"
+end
+
+--- Swaps the viewer from an outdated context to an updated one, without stealing focus.
+--- @return boolean replaced
+function M.replace_viewer(previous, updated, viewer)
+	if previous.viewer == "diffview" then
+		local tab = previous.viewer_tab
+		if not (tab and vim.api.nvim_tabpage_is_valid(tab) and vim.api.nvim_get_current_tabpage() == tab) then
+			return false
+		end
+		vim.cmd("DiffviewClose")
+		updated.viewer = M.open_viewer(updated, "diffview")
+		return true
+	end
+	if previous.viewer == "quickfix" then
+		open_quickfix(updated, true)
+		updated.viewer = "quickfix"
+		return true
+	end
+	if not previous.viewer and #updated.files > 0 then
+		updated.viewer = M.open_viewer(updated, viewer)
+		return true
+	end
+	updated.viewer = previous.viewer
+	return true
 end
 
 function M.set_context(session_name, context)

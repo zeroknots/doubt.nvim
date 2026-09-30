@@ -20,6 +20,10 @@ local function commit_all(cwd, message)
 	return git(cwd, "rev-parse", "HEAD")
 end
 
+local function verify_ref_missing(cwd, ref)
+	return vim.system({ "git", "rev-parse", "--verify", "--quiet", ref }, { cwd = cwd }):wait().code ~= 0
+end
+
 local function sorted(list)
 	local copy = vim.deepcopy(list)
 	table.sort(copy)
@@ -74,6 +78,62 @@ local function make_fixture()
 		upstream_tip = upstream_tip,
 		work = work,
 	}
+end
+
+-- Branch cut from develop, which is ahead of main; the PR base is develop.
+local function make_stacked_fixture()
+	local fx = make_fixture()
+	git(fx.seed, "checkout", "-q", "-b", "develop", fx.branch_point)
+	write(fx.seed, "develop_only.txt", { "dev" })
+	fx.develop_tip = commit_all(fx.seed, "develop work")
+	git(fx.seed, "push", "-q", "origin", "develop")
+	git(fx.work, "fetch", "-q", "origin")
+	git(fx.work, "remote", "set-head", "origin", "main")
+	git(fx.work, "reset", "-q", "--hard")
+	git(fx.work, "checkout", "-q", "-b", "stacked", "origin/develop")
+	write(fx.work, "stacked.txt", { "mine" })
+	commit_all(fx.work, "stacked")
+	return fx
+end
+
+-- Puts a fake `gh` first on PATH that prints `base` after `delay` seconds.
+local function fake_gh(root, base, delay)
+	local bin = vim.fs.joinpath(root, "bin")
+	vim.fn.mkdir(bin, "p")
+	local script = vim.fs.joinpath(bin, "gh")
+	vim.fn.writefile({ "#!/bin/sh", "sleep " .. tostring(delay), "echo " .. base }, script)
+	vim.uv.fs_chmod(script, 493)
+	local previous = vim.env.PATH
+	vim.env.PATH = bin .. ":" .. previous
+	return function()
+		vim.env.PATH = previous
+	end
+end
+
+-- Required up front: the test runtimepath is relative, so require() breaks after a cd.
+local doubt_module = require("doubt")
+local state_module = require("doubt.state")
+local pr_review_module = require("doubt.pr_review")
+
+local function fresh_doubt(fx, review)
+	local doubt = doubt_module
+	doubt.setup({
+		keymaps = false,
+		export = { register = "a" },
+		review = review,
+		state_path = vim.fs.joinpath(fx.root, "state.json"),
+	})
+	return doubt, state_module
+end
+
+local function qf_files()
+	local names = {}
+	for _, item in ipairs(vim.fn.getqflist()) do
+		names[vim.fn.fnamemodify(vim.fn.bufname(item.bufnr), ":t")] = true
+	end
+	local list = vim.tbl_keys(names)
+	table.sort(list)
+	return list
 end
 
 describe("pr review", function()
@@ -216,5 +276,70 @@ describe("pr review", function()
 		t.assert_eq(pr_review.open_viewer(context, "auto"), "diffview")
 		t.assert_eq(received, fx.branch_point)
 		vim.api.nvim_del_user_command("DiffviewOpen")
+	end)
+
+	it("opens from local refs without waiting for gh, then retargets to the PR base", function()
+		local fx = make_stacked_fixture()
+		local restore = fake_gh(fx.root, "develop", 1.5)
+		local ok, err = pcall(function()
+			with_cwd(fx.work, function()
+				local doubt = fresh_doubt(fx, { fetch = true, gh = true, viewer = "quickfix" })
+				local settled = nil
+				local started = vim.uv.hrtime()
+				local initial = doubt.start_review({ on_settled = function(c) settled = c or false end })
+				local elapsed_ms = (vim.uv.hrtime() - started) / 1e6
+				t.assert_eq(elapsed_ms < 1000, true, "start_review must not block on gh (took " .. elapsed_ms .. "ms)")
+				t.assert_eq(initial.base_ref, "origin/main", "initial view uses origin/HEAD")
+				t.assert_eq(qf_files(), { "develop_only.txt", "stacked.txt" }, "against main, develop's work shows up")
+
+				t.assert_eq(vim.wait(10000, function() return settled ~= nil end, 20), true, "background refresh should finish")
+				t.assert_eq(settled.base_ref, "origin/develop")
+				t.assert_eq(settled.merge_base, fx.develop_tip)
+				t.assert_eq(qf_files(), { "stacked.txt" }, "quickfix is rebuilt against the PR base")
+				local text = pr_review_module.context_text("review/stacked")
+				t.assert_match(text, "against `origin/develop`")
+			end)
+		end)
+		restore()
+		if not ok then
+			error(err, 0)
+		end
+	end)
+
+	it("fetches a base that is missing locally before opening", function()
+		local fx = make_fixture()
+		git(fx.seed, "checkout", "-q", "-b", "release", fx.branch_point)
+		git(fx.seed, "push", "-q", "origin", "release")
+		with_cwd(fx.work, function()
+			t.assert_eq(verify_ref_missing(fx.work, "origin/release"), true, "fixture: origin/release not fetched yet")
+			local doubt, state = fresh_doubt(fx, { fetch = true, gh = false, viewer = "quickfix" })
+			local settled = nil
+			local initial = doubt.start_review({ base = "release", on_settled = function(c) settled = c or false end })
+			t.assert_eq(initial, nil, "nothing to show until the base is fetched")
+			t.assert_eq(vim.wait(10000, function() return settled ~= nil end, 20), true)
+			t.assert_eq(settled.base_ref, "origin/release")
+			t.assert_eq(state.active_session_name(), "review/feature/x")
+		end)
+	end)
+
+	it("ignores a background refresh superseded by a newer review", function()
+		local fx = make_stacked_fixture()
+		local restore = fake_gh(fx.root, "develop", 0.5)
+		local ok, err = pcall(function()
+			with_cwd(fx.work, function()
+				local doubt = fresh_doubt(fx, { fetch = false, gh = true, viewer = "none" })
+				local first, second = nil, nil
+				doubt.start_review({ on_settled = function(c) first = c or false end })
+				doubt.start_review({ on_settled = function(c) second = c or false end })
+				t.assert_eq(vim.wait(10000, function() return second ~= nil end, 20), true)
+				vim.wait(800, function() return first ~= nil end, 20)
+				t.assert_eq(first, nil, "superseded refresh must not call back or touch the view")
+				t.assert_eq(second.base_ref, "origin/develop")
+			end)
+		end)
+		restore()
+		if not ok then
+			error(err, 0)
+		end
 	end)
 end)

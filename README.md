@@ -139,7 +139,7 @@ Template names are exposed as command completion so custom handoff wrappers stay
 `:DoubtReview [base]` reviews the current branch the way a PR shows it: every change since the branch left its base.
 
 1. Resolves the base: the argument (tried as `origin/<base>` first), else the open PR's base via `gh`, else `origin/HEAD`, `origin/main`, `origin/master`.
-2. Fetches the remote base (`review.fetch`), then diffs the working tree against `git merge-base <base> HEAD`, so upstream commits never appear as branch changes.
+2. Diffs the working tree against `git merge-base <base> HEAD`, so upstream commits never appear as branch changes. The view opens immediately from local refs; the `gh` lookup and fetch (`review.fetch`) run in the background and retarget the diff if the base moved.
 3. Starts or resumes the session `review/<branch>`.
 4. Opens Diffview against the merge base, or a quickfix list of hunks when Diffview is unavailable. Claim on the right-hand (working tree) side.
 

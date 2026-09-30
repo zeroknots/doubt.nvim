@@ -1240,6 +1240,27 @@ function M.stop_session()
 	ctx.notify(string.format("Stopped doubt session: %s", session_name))
 end
 
+local review_generation = 0
+
+local function notify_review_started(review_context, session_name)
+	if #review_context.files == 0 then
+		ctx.notify(
+			string.format("No changes between %s and the working tree", review_context.base_ref),
+			vim.log.levels.INFO
+		)
+		return
+	end
+	ctx.notify(string.format(
+		"Reviewing %s against %s: %d changed file%s (session %s)",
+		review_context.branch,
+		review_context.base_ref,
+		#review_context.files,
+		#review_context.files == 1 and "" or "s",
+		session_name
+	))
+end
+
+-- Local refs are enough to show the review immediately; network refresh happens in the background.
 function M.start_review(opts)
 	inline_editor.close()
 	opts = opts or {}
@@ -1248,48 +1269,102 @@ function M.start_review(opts)
 	if base == nil or vim.trim(base) == "" then
 		base = review_config.base
 	end
+	local fetch = review_config.fetch
+	if opts.fetch ~= nil then
+		fetch = opts.fetch
+	end
+	local viewer = opts.viewer or review_config.viewer
+	local cwd = vim.fn.getcwd()
+	local on_settled = opts.on_settled or function() end
 
-	local review_context, err = pr_review.resolve({
-		base = base,
-		cwd = vim.fn.getcwd(),
-		fetch = opts.fetch ~= nil and opts.fetch or review_config.fetch,
+	review_generation = review_generation + 1
+	local generation = review_generation
+
+	local function resolve_local()
+		return pr_review.resolve({ base = base, cwd = cwd, fetch = false, gh = false })
+	end
+
+	local function activate(review_context)
+		local session_name = pr_review.session_name(review_config.session_prefix, review_context.branch)
+		M.start_session({ name = session_name, quiet = true })
+		if state.active_session_name() ~= session_name then
+			return nil
+		end
+		pr_review.set_context(session_name, review_context)
+		if #review_context.files > 0 then
+			review_context.viewer = pr_review.open_viewer(review_context, viewer)
+		end
+		notify_review_started(review_context, session_name)
+		return session_name
+	end
+
+	local initial = resolve_local()
+	local session_name = initial and activate(initial) or nil
+	if initial and not session_name then
+		on_settled(nil)
+		return nil
+	end
+	if not fetch and review_config.gh == false then
+		if not initial then
+			ctx.notify(select(2, resolve_local()), vim.log.levels.WARN)
+		end
+		on_settled(initial)
+		return initial
+	end
+	if not initial then
+		ctx.notify("Fetching review base...", vim.log.levels.INFO)
+	end
+
+	pr_review.sync_remote({
+		base = base and vim.trim(base) or nil,
+		base_ref = initial and initial.base_ref or nil,
+		cwd = cwd,
+		fetch = fetch,
 		gh = review_config.gh,
-	})
-	if not review_context then
-		ctx.notify(err, vim.log.levels.WARN)
-		return nil
-	end
-	if review_context.fetch_error then
-		ctx.notify(
-			string.format("Could not fetch %s, reviewing local ref: %s", review_context.base_ref, review_context.fetch_error),
-			vim.log.levels.WARN
-		)
-	end
+	}, function(remote)
+		-- A newer :DoubtReview supersedes this one.
+		if generation ~= review_generation then
+			return
+		end
+		local updated, err = pr_review.resolve({ base = remote.base, cwd = cwd, fetch = false, gh = false })
+		if not updated then
+			ctx.notify(err, vim.log.levels.WARN)
+			on_settled(initial)
+			return
+		end
+		if remote.fetch_error and updated.base_ref == remote.target then
+			ctx.notify(
+				string.format("Could not fetch %s, reviewing local ref: %s", updated.base_ref, remote.fetch_error),
+				vim.log.levels.WARN
+			)
+		end
 
-	local session_name = pr_review.session_name(review_config.session_prefix, review_context.branch)
-	M.start_session({ name = session_name, quiet = true })
-	if state.active_session_name() ~= session_name then
-		return nil
-	end
-	pr_review.set_context(session_name, review_context)
+		if not initial then
+			if activate(updated) then
+				on_settled(updated)
+			else
+				on_settled(nil)
+			end
+			return
+		end
 
-	if #review_context.files == 0 then
-		ctx.notify(
-			string.format("No changes between %s and the working tree", review_context.base_ref),
-			vim.log.levels.INFO
-		)
-	else
-		review_context.viewer = pr_review.open_viewer(review_context, opts.viewer or review_config.viewer)
-		ctx.notify(string.format(
-			"Reviewing %s against %s: %d changed file%s (session %s)",
-			review_context.branch,
-			review_context.base_ref,
-			#review_context.files,
-			#review_context.files == 1 and "" or "s",
-			session_name
-		))
-	end
-	return review_context
+		if updated.base_ref == initial.base_ref and updated.merge_base == initial.merge_base then
+			on_settled(initial)
+			return
+		end
+
+		pr_review.set_context(session_name, updated)
+		if pr_review.replace_viewer(initial, updated, viewer) then
+			ctx.notify(string.format("Review base updated to %s", updated.base_ref))
+		else
+			ctx.notify(
+				string.format("Review base updated to %s; rerun :DoubtReview to refresh the diff", updated.base_ref),
+				vim.log.levels.WARN
+			)
+		end
+		on_settled(updated)
+	end)
+	return initial
 end
 
 function M.delete_workspace_session(opts)
